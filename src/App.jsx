@@ -172,7 +172,12 @@ function App() {
   }
 
   async function handleAgentPayment() {
-    if (IS_PUBLIC_DEMO) return;
+    if (IS_PUBLIC_DEMO) {
+      setStatus(
+        "Public Noir Agent payments are disabled until individual wallet authorization is implemented."
+      );
+      return;
+    }
 
     setStatus("");
     setAgentResult(null);
@@ -217,8 +222,6 @@ function App() {
   }
 
   async function handlePayment() {
-    if (IS_PUBLIC_DEMO) return;
-
     setStatus("");
     setPayment(null);
 
@@ -236,7 +239,7 @@ function App() {
 
     try {
       setLoading(true);
-      setStatus("Creating Testnet checkout...");
+      setStatus("Creating Stellar Testnet checkout...");
 
       const response = await fetch(`${API_URL}/api/create-checkout`, {
         method: "POST",
@@ -250,6 +253,10 @@ function App() {
 
       if (!response.ok || !data.success || !data.checkoutUrl) {
         throw new Error(data.error || "Checkout creation failed.");
+      }
+
+      if (!data.paymentIntentId) {
+        throw new Error("Checkout did not return a payment ID.");
       }
 
       localStorage.setItem("paymentIntentId", data.paymentIntentId);
@@ -298,13 +305,13 @@ function App() {
   }, []);
 
   if (currentPage === "/success") {
-    const isConfirmed =
-      payment?.status === "confirmed" ||
-      Boolean(payment?.stageTimestamps?.confirmed);
+    const isConfirmed = payment?.status === "paid";
 
-    const isFailed = ["failed", "expired", "cancelled"].includes(
-      payment?.status
-    );
+    const isFailed = [
+      "failed",
+      "expired",
+      "cancelled",
+    ].includes(payment?.status);
 
     return (
       <div className="app">
@@ -368,7 +375,9 @@ function App() {
         <main className="dashboard">
           <div className="payment-card">
             <h1>Checkout Cancelled</h1>
-            <p>You returned from checkout without completing the payment.</p>
+            <p>
+              You returned from checkout without completing the payment.
+            </p>
 
             <button
               className="send-button"
@@ -468,11 +477,7 @@ function App() {
             onClick={handleAgentPayment}
             disabled={IS_PUBLIC_DEMO || loading}
           >
-            {IS_PUBLIC_DEMO
-              ? "Start Agent Payment"
-              : loading
-              ? "Processing Payment..."
-              : "Start Agent Payment"}
+            {loading ? "Processing Payment..." : "Start Agent Payment"}
           </button>
 
           {IS_PUBLIC_DEMO && (
@@ -514,15 +519,15 @@ function App() {
           <button
             className="send-button"
             onClick={handlePayment}
-            disabled={IS_PUBLIC_DEMO || loading}
+            disabled={loading}
           >
             {loading ? "Creating Checkout..." : "Continue"}
           </button>
 
           {IS_PUBLIC_DEMO && (
             <p className="status">
-              Velo checkout is disabled on the public demo.
-              Run the app locally to test checkout.
+              Public Velo checkout uses Stellar Testnet.
+              No real-money payments are processed.
             </p>
           )}
 

@@ -25,13 +25,13 @@ const allowedOrigins = [
   "http://localhost:5174",
   "http://127.0.0.1:5173",
   "http://127.0.0.1:5174",
-  process.env.FRONTEND_URL,
+  process.env.FRONTEND_URL?.replace(/\/+$/, ""),
 ].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin.replace(/\/+$/, ""))) {
         return callback(null, true);
       }
 
@@ -122,6 +122,10 @@ if (
   !process.env.NOIR_MERCHANT_SECRET
 ) {
   throw new Error("Missing Noir account configuration.");
+}
+
+if (!process.env.VELO_API_KEY) {
+  throw new Error("Missing Velo API configuration.");
 }
 
 const noir = new NoirAgentClient();
@@ -263,17 +267,8 @@ app.post("/api/noir/pay", async (req, res) => {
   }
 });
 
-// Velo checkout.
+// Public Velo Testnet checkout.
 app.post("/api/create-checkout", async (req, res) => {
-  // Public production demo cannot create checkouts.
-  // Local Testnet checkout remains available.
-  if (IS_PRODUCTION) {
-    return res.status(403).json({
-      success: false,
-      error: "Velo checkout is disabled on the public demo.",
-    });
-  }
-
   const clientKey = req.ip || "unknown";
 
   if (!allowRequest(clientKey, 5, 10 * 60 * 1000)) {
@@ -304,16 +299,33 @@ app.post("/api/create-checkout", async (req, res) => {
 
     const frontendUrl = process.env.FRONTEND_URL;
 
-    const baseUrl =
-      frontendUrl || "http://localhost:5174";
+    if (!frontendUrl) {
+      throw new Error("FRONTEND_URL is not configured.");
+    }
 
-    const session = await velo.checkout.sessions.create({
-      amount: amount.toFixed(2),
-      asset: "native",
-      description: "PayPilot AI Stellar Testnet Demo",
-      successUrl: `${baseUrl}/success`,
-      cancelUrl: `${baseUrl}/cancel`,
-    });
+    const baseUrl = frontendUrl.replace(/\/+$/, "");
+    const parsedUrl = new URL(baseUrl);
+
+    if (
+      IS_PRODUCTION &&
+      (parsedUrl.protocol !== "https:" ||
+        parsedUrl.hostname !== "paypilot-ai-five.vercel.app")
+    ) {
+      throw new Error("Invalid production frontend URL.");
+    }
+
+    const session = await velo.checkout.sessions.create(
+      {
+        amount: amount.toFixed(2),
+        asset: "native",
+        description: "PayPilot AI Stellar Testnet Demo",
+        successUrl: `${baseUrl}/success`,
+        cancelUrl: `${baseUrl}/cancel`,
+      },
+      {
+        idempotencyKey: `paypilot-${crypto.randomUUID()}`,
+      }
+    );
 
     if (!session.checkoutUrl || !session.paymentIntentId) {
       throw new Error("Velo did not return checkout details.");
@@ -338,7 +350,16 @@ app.post("/api/create-checkout", async (req, res) => {
 // Velo payment lookup.
 app.get("/api/payment/:id", async (req, res) => {
   try {
-    const intent = await velo.paymentIntents.retrieve(req.params.id);
+    const id = String(req.params.id || "");
+
+    if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid payment ID.",
+      });
+    }
+
+    const intent = await velo.paymentIntents.retrieve(id);
 
     return res.json({
       success: true,
