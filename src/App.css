@@ -1,0 +1,109 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background: #0b1020;
+  color: white;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 30px;
+}
+
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 40px;
+  background: #151d32;
+  border-radius: 15px;
+}
+
+.logo {
+  font-size: 24px;
+  font-weight: bold;
+  color: #65e6c4;
+}
+
+.network {
+  background: #173b36;
+  color: #65e6c4;
+  padding: 8px 15px;
+  border-radius: 20px;
+  font-size: 13px;
+}
+
+.dashboard {
+  max-width: 900px;
+  margin: 70px auto;
+}
+
+.dashboard h1 {
+  font-size: 38px;
+  margin-bottom: 12px;
+}
+
+.subtitle {
+  color: #9ba8bd;
+  margin-bottom: 35px;
+}
+
+.payment-card {
+  background: #151d32;
+  padding: 35px;
+  border-radius: 20px;
+  border: 1px solid #293550;
+}
+
+.payment-card label {
+  display: block;
+  margin: 20px 0 10px;
+  color: #c5cede;
+}
+
+.payment-card input {
+  width: 100%;
+  padding: 15px;
+  border-radius: 10px;
+  border: 1px solid #35425e;
+  background: #0b1020;
+  color: white;
+  font-size: 16px;
+  outline: none;
+}
+
+.payment-card input:focus {
+  border-color: #65e6c4;
+}
+
+.send-button {
+  width: 100%;
+  padding: 16px;
+  margin-top: 30px;
+  border: none;
+  border-radius: 10px;
+  background: #65e6c4;
+  color: #0b1020;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.send-button:hover {
+  background: #4fd3b1;
+}
+
+.status {
+  margin-top: 25px;
+  color: #65e6c4;
+  font-size: 14px;
+}
