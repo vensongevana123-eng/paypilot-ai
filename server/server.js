@@ -19,6 +19,7 @@ const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
 app.set("trust proxy", 1);
 
+// CORS configuration.
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -33,10 +34,25 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
+
       return callback(new Error("Origin not allowed by CORS"));
     },
   })
 );
+
+// Health check for Render.
+app.get("/health", (req, res) => {
+  return res.status(200).json({
+    status: "ok",
+    app: "PayPilot AI",
+    network: "Stellar Testnet",
+  });
+});
+
+// Root route.
+app.get("/", (req, res) => {
+  return res.send("PayPilot AI Server is running!");
+});
 
 // Simple in-memory request limiter for the public demo.
 const requestLimits = new Map();
@@ -89,6 +105,7 @@ app.post(
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Velo webhook verification failed:", error.message);
+
       return res.status(400).json({
         received: false,
         error: "Invalid webhook signature.",
@@ -123,11 +140,6 @@ const deviceHash = createHash("sha256")
   .update(DEVICE_UID)
   .digest("hex");
 
-// Health check.
-app.get("/", (req, res) => {
-  res.send("PayPilot AI Server is running!");
-});
-
 // Read-only shared Noir demo status.
 app.get("/api/noir/status", async (req, res) => {
   try {
@@ -152,6 +164,7 @@ app.get("/api/noir/status", async (req, res) => {
     });
   } catch (error) {
     console.error("Noir status error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Unable to retrieve Noir status.",
@@ -220,6 +233,7 @@ app.post("/api/noir/pay", async (req, res) => {
         merchant: merchantSigner,
         token: asset,
       });
+
       claimHash = claim.hash;
     } catch (error) {
       claimError = "Payment authorized, but merchant claim needs retry.";
@@ -240,6 +254,7 @@ app.post("/api/noir/pay", async (req, res) => {
     });
   } catch (error) {
     console.error("Noir payment error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Noir payment could not be completed.",
@@ -286,7 +301,8 @@ app.post("/api/create-checkout", async (req, res) => {
       });
     }
 
-    const baseUrl = frontendUrl || "http://localhost:5174";
+    const baseUrl =
+      frontendUrl || "http://localhost:5174";
 
     const session = await velo.checkout.sessions.create({
       amount: amount.toFixed(2),
@@ -308,6 +324,7 @@ app.post("/api/create-checkout", async (req, res) => {
     });
   } catch (error) {
     console.error("Checkout error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Unable to create checkout session.",
@@ -326,6 +343,7 @@ app.get("/api/payment/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("Payment lookup error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Unable to retrieve payment information.",
@@ -333,6 +351,7 @@ app.get("/api/payment/:id", async (req, res) => {
   }
 });
 
+// Start server.
 app.listen(PORT, () => {
   console.log(`PayPilot AI Server running on port ${PORT}`);
   console.log("Noir Agent:", agentAddress);
