@@ -54,7 +54,7 @@ app.get("/", (req, res) => {
   return res.send("PayPilot AI Server is running!");
 });
 
-// Simple in-memory request limiter for the public demo.
+// Simple in-memory request limiter.
 const requestLimits = new Map();
 
 function allowRequest(key, maxRequests, windowMs) {
@@ -203,6 +203,7 @@ app.post("/api/noir/pay", async (req, res) => {
     const check = await noir.checkPayment({
       deviceHash,
       agent: agentAddress,
+      merchant: merchantAddress,
       asset,
       amount,
       requireEscrow: true,
@@ -262,8 +263,17 @@ app.post("/api/noir/pay", async (req, res) => {
   }
 });
 
-// Public Velo checkout: Stellar Testnet only.
+// Velo checkout.
 app.post("/api/create-checkout", async (req, res) => {
+  // Public production demo cannot create checkouts.
+  // Local Testnet checkout remains available.
+  if (IS_PRODUCTION) {
+    return res.status(403).json({
+      success: false,
+      error: "Velo checkout is disabled on the public demo.",
+    });
+  }
+
   const clientKey = req.ip || "unknown";
 
   if (!allowRequest(clientKey, 5, 10 * 60 * 1000)) {
@@ -293,13 +303,6 @@ app.post("/api/create-checkout", async (req, res) => {
     }
 
     const frontendUrl = process.env.FRONTEND_URL;
-
-    if (IS_PRODUCTION && !frontendUrl) {
-      return res.status(500).json({
-        success: false,
-        error: "Frontend URL is not configured.",
-      });
-    }
 
     const baseUrl =
       frontendUrl || "http://localhost:5174";
