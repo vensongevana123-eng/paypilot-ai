@@ -4,21 +4,40 @@ import express from "express";
 import cors from "cors";
 import { createHash } from "node:crypto";
 import { Asset, Networks } from "@stellar/stellar-sdk";
-import { Velo } from "@carts1024/velo-sdk";
 import {
   NoirAgentClient,
   keypairSigner,
   toStroops,
   fromStroops,
 } from "@noirx402/agent-sdk";
+import { Velo } from "@carts1024/velo-sdk";
 import { velo } from "./velo.js";
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
-app.use(cors());
+// CORS configuration
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
 
-// Velo setup
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Origin not allowed by CORS"));
+    },
+  })
+);
+
+// Velo webhook - verify the signature before accepting events
 app.post(
   "/api/webhooks/velo",
   express.raw({ type: "application/json" }),
@@ -47,6 +66,7 @@ app.post(
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Velo webhook verification failed:", error.message);
+
       return res.status(400).json({
         received: false,
         error: "Invalid webhook signature.",
@@ -55,11 +75,14 @@ app.post(
   }
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "10kb" }));
 
-// Noir setup
-if (!process.env.NOIR_AGENT_SECRET || !process.env.NOIR_MERCHANT_SECRET) {
-  throw new Error("Missing Noir account configuration in .env");
+// Noir configuration
+if (
+  !process.env.NOIR_AGENT_SECRET ||
+  !process.env.NOIR_MERCHANT_SECRET
+) {
+  throw new Error("Missing Noir account configuration.");
 }
 
 const noir = new NoirAgentClient();
@@ -83,19 +106,20 @@ const deviceHash = createHash("sha256")
   .update(DEVICE_UID)
   .digest("hex");
 
-// Backend connection test
+// Health check
 app.get("/", (req, res) => {
   res.send("PayPilot AI Server is running!");
 });
 
-// Noir account information
+// Noir account and policy information
 app.get("/api/noir/status", async (req, res) => {
   try {
     const balance = await noir.getEscrowBalance(deviceHash);
     const policy = await noir.getPolicy(deviceHash);
 
-    res.json({
+    return res.json({
       success: true,
+      network: "Stellar Testnet",
       agent: agentAddress,
       merchant: merchantAddress,
       escrowBalance: fromStroops(balance),
@@ -110,15 +134,24 @@ app.get("/api/noir/status", async (req, res) => {
     });
   } catch (error) {
     console.error("Noir status error:", error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       error: "Unable to retrieve Noir status.",
     });
   }
 });
 
-// Agent-driven Testnet payment
+// Agent-driven Noir Testnet payment
 app.post("/api/noir/pay", async (req, res) => {
+  // Public production payments remain disabled until authentication is added.
+  if (IS_PRODUCTION) {
+    return res.status(403).json({
+      success: false,
+      error: "Testnet payments are disabled on the public server.",
+    });
+  }
+
   try {
     const rawAmount = String(req.body.amount ?? "");
 
@@ -140,7 +173,7 @@ app.post("/api/noir/pay", async (req, res) => {
 
     console.log("Agent checking payment:", rawAmount, "XLM");
 
-    // Step 1: Ask Noir to check the spending policy.
+    // Step 1: Check the Noir spending policy.
     const check = await noir.checkPayment({
       deviceHash,
       agent: agentAddress,
@@ -191,6 +224,7 @@ app.post("/api/noir/pay", async (req, res) => {
       message: "Noir Agent authorized the Testnet payment.",
       amount: fromStroops(amount),
       asset: "XLM",
+      network: "Stellar Testnet",
       agent: agentAddress,
       merchant: merchantAddress,
       authorizationHash: authorization.hash,
@@ -207,8 +241,16 @@ app.post("/api/noir/pay", async (req, res) => {
   }
 });
 
-// Original Velo checkout
+// Velo checkout
 app.post("/api/create-checkout", async (req, res) => {
+  // Do not allow public checkout creation until authentication is added.
+  if (IS_PRODUCTION) {
+    return res.status(403).json({
+      success: false,
+      error: "Checkout creation is disabled on the public server.",
+    });
+  }
+
   try {
     const { amount } = req.body;
 
@@ -220,16 +262,20 @@ app.post("/api/create-checkout", async (req, res) => {
       Number(amount) <= 0
     ) {
       return res.status(400).json({
+        success: false,
         error: "Please provide a valid amount.",
       });
     }
+
+    const frontendUrl =
+      process.env.FRONTEND_URL || "http://localhost:5174";
 
     const session = await velo.checkout.sessions.create({
       amount: Number(amount).toFixed(2),
       asset: "native",
       description: "PayPilot AI Testnet Payment",
-      successUrl: "http://localhost:5174/success",
-      cancelUrl: "http://localhost:5174/cancel",
+      successUrl: `${frontendUrl}/success`,
+      cancelUrl: `${frontendUrl}/cancel`,
     });
 
     if (!session.checkoutUrl) {
@@ -243,6 +289,7 @@ app.post("/api/create-checkout", async (req, res) => {
     });
   } catch (error) {
     console.error("Checkout error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Unable to create checkout session.",
@@ -250,7 +297,7 @@ app.post("/api/create-checkout", async (req, res) => {
   }
 });
 
-// Original Velo payment lookup
+// Velo payment lookup
 app.get("/api/payment/:id", async (req, res) => {
   try {
     const intent = await velo.paymentIntents.retrieve(req.params.id);
@@ -261,6 +308,7 @@ app.get("/api/payment/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("Payment lookup error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Unable to retrieve payment information.",
@@ -268,9 +316,11 @@ app.get("/api/payment/:id", async (req, res) => {
   }
 });
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`PayPilot AI Server running on http://localhost:${PORT}`);
+  console.log(`PayPilot AI Server running on port ${PORT}`);
   console.log("Noir Agent:", agentAddress);
   console.log("Noir Merchant:", merchantAddress);
   console.log("Network: Stellar Testnet");
+  console.log("Production mode:", IS_PRODUCTION);
 });
