@@ -1,77 +1,34 @@
 
 import { useEffect, useState } from "react";
-import { Asset, Networks } from "@stellar/stellar-sdk";
-import {
-  NoirAgentClient,
-  noirExtensionSigner,
-  toStroops,
-} from "@noirx402/agent-sdk";
+import { noirExtensionSigner } from "@noirx402/agent-sdk";
 import "./App.css";
 
-// Automatically select the correct backend.
-const IS_LOCAL =
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "127.0.0.1";
-
-const API_URL = IS_LOCAL
-  ? "http://127.0.0.1:3000"
-  : "https://paypilot-ai-aoad.onrender.com";
-
-const PUBLIC_PAYMENT_DISABLED = !IS_LOCAL;
-
-const AGENT =
-  "GAA5FPAJJ5RCDFHFWVTWTXNDAIFNOGKYTLPFUSRFV6OORDLC7V5BEGDX";
-
-const DEVICE_UID = "PAYPILOT-DEMO-CARD-001";
-
-const noir = new NoirAgentClient();
-
-async function createDeviceHash(uid) {
-  const data = new TextEncoder().encode(uid);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
+const API_URL = "https://paypilot-ai-aoad.onrender.com";
+const MAX_DEMO_AMOUNT = 5;
 
 function App() {
-  const [serverMessage, setServerMessage] = useState(
-    "Checking connection..."
-  );
-
+  const [serverMessage, setServerMessage] = useState("Checking connection...");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState("");
   const [payment, setPayment] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const [ownerSigner, setOwnerSigner] = useState(null);
   const [ownerAddress, setOwnerAddress] = useState("");
   const [noirStatus, setNoirStatus] = useState("");
   const [noirLoading, setNoirLoading] = useState(false);
 
-  // Noir Agent Payment
-  const [agentAmount, setAgentAmount] = useState("1");
-  const [agentStatus, setAgentStatus] = useState("");
-  const [agentResult, setAgentResult] = useState(null);
-  const [agentLoading, setAgentLoading] = useState(false);
-
   const currentPage = window.location.pathname;
 
-  // Check backend connection.
   useEffect(() => {
     fetch(API_URL)
       .then((response) => {
-        if (!response.ok) {
-          throw new Error("Backend unavailable");
-        }
+        if (!response.ok) throw new Error("Backend unavailable");
         return response.text();
       })
       .then(setServerMessage)
       .catch(() => setServerMessage("Backend offline"));
   }, []);
 
-  // Connect the Noir owner wallet.
   async function connectOwner() {
     try {
       setNoirLoading(true);
@@ -79,176 +36,15 @@ function App() {
 
       const signer = await noirExtensionSigner();
 
-      setOwnerSigner(signer);
       setOwnerAddress(signer.publicKey);
-      setNoirStatus("Owner wallet connected successfully.");
+      setNoirStatus("Wallet connected successfully.");
     } catch (error) {
-      setNoirStatus(
-        error.message || "Unable to connect Noir wallet."
-      );
+      setNoirStatus(error.message || "Unable to connect Noir wallet.");
     } finally {
       setNoirLoading(false);
     }
   }
 
-  // Register the device, authorize the agent, and fund escrow.
-  async function setupNoir() {
-    if (!ownerSigner) {
-      setNoirStatus("Connect your Owner wallet first.");
-      return;
-    }
-
-    try {
-      setNoirLoading(true);
-      setNoirStatus("Preparing Testnet device...");
-
-      const deviceHash = await createDeviceHash(DEVICE_UID);
-      const asset = Asset.native().contractId(Networks.TESTNET);
-
-      const currentOwner = await noir.getDeviceOwner(deviceHash);
-
-      if (!currentOwner) {
-        setNoirStatus("Registering demo device...");
-
-        await noir.execute(ownerSigner, {
-          kind: "registerDevice",
-          deviceHash,
-          agent: AGENT,
-        });
-      } else if (currentOwner !== ownerSigner.publicKey) {
-        throw new Error(
-          "This demo device is already registered to another wallet."
-        );
-      }
-
-      const policy = await noir.getPolicy(deviceHash);
-
-      if (!policy) {
-        setNoirStatus("Setting Agent spending limit...");
-
-        await noir.execute(ownerSigner, {
-          kind: "registerAgent",
-          deviceHash,
-          agent: AGENT,
-          asset,
-          maxAmount: toStroops("5"),
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        });
-      } else if (
-        policy.agent !== AGENT ||
-        policy.asset !== asset
-      ) {
-        throw new Error(
-          "An existing policy uses a different Agent or asset."
-        );
-      }
-
-      const escrowToken = await noir.getEscrowToken(deviceHash);
-      const balance = await noir.getEscrowBalance(deviceHash);
-      const targetBalance = toStroops("10");
-
-      if (escrowToken && escrowToken !== asset) {
-        throw new Error("The device escrow uses a different asset.");
-      }
-
-      if (balance < targetBalance) {
-        const amountToFund = targetBalance - balance;
-
-        setNoirStatus("Funding Testnet escrow...");
-
-        await noir.execute(ownerSigner, {
-          kind: "fundEscrow",
-          deviceHash,
-          token: asset,
-          amount: amountToFund,
-        });
-      }
-
-      setNoirStatus(
-        "Success! Device registered, Agent authorized, and escrow funded."
-      );
-    } catch (error) {
-      console.error("Noir setup error:", error);
-
-      setNoirStatus(
-        error.message || "Noir setup failed. Check the console."
-      );
-    } finally {
-      setNoirLoading(false);
-    }
-  }
-
-  // Agent-driven payment.
-  async function handleAgentPayment() {
-    setAgentResult(null);
-    setAgentStatus("");
-
-    if (PUBLIC_PAYMENT_DISABLED) {
-      setAgentStatus(
-        "Agent payments are disabled on the public website. Run the local demo to test payments."
-      );
-      return;
-    }
-
-    if (
-      !/^\d+(\.\d{1,7})?$/.test(agentAmount) ||
-      Number(agentAmount) <= 0
-    ) {
-      setAgentStatus("Enter a valid XLM amount.");
-      return;
-    }
-
-    if (Number(agentAmount) > 5) {
-      setAgentStatus(
-        "Payment exceeds the Agent's 5 XLM spending limit."
-      );
-      return;
-    }
-
-    try {
-      setAgentLoading(true);
-      setAgentStatus("Agent checking Noir spending policy...");
-
-      const response = await fetch(`${API_URL}/api/noir/pay`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          amount: agentAmount,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.message ||
-            data.error ||
-            `Payment refused: ${data.reason || "Unknown reason"}`
-        );
-      }
-
-      setAgentResult(data);
-
-      if (data.claimHash) {
-        setAgentStatus(
-          "Success! Agent authorized the payment and Merchant claimed it."
-        );
-      } else {
-        setAgentStatus(
-          "Payment authorized, but Merchant claim needs attention."
-        );
-      }
-    } catch (error) {
-      console.error("Agent payment error:", error);
-      setAgentStatus(error.message || "Agent payment failed.");
-    } finally {
-      setAgentLoading(false);
-    }
-  }
-
-  // Check Velo payment status.
   async function checkPayment() {
     const paymentIntentId = localStorage.getItem("paymentIntentId");
 
@@ -274,43 +70,41 @@ function App() {
       setPayment(data.payment);
       setStatus("");
     } catch (error) {
-      setStatus(error.message);
+      setStatus(error.message || "Unable to check payment.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Load payment details after returning from checkout.
   useEffect(() => {
     if (currentPage === "/success") {
       checkPayment();
     }
   }, []);
 
-  // Create a Velo checkout session.
   async function handlePayment() {
     setStatus("");
     setPayment(null);
 
-    if (PUBLIC_PAYMENT_DISABLED) {
-      setStatus(
-        "Velo checkout is disabled on the public website. Run the local demo to test checkout."
-      );
+    if (!/^\d+(\.\d{1,2})?$/.test(amount)) {
+      setStatus("Enter a valid amount with up to 2 decimal places.");
       return;
     }
 
+    const numericAmount = Number(amount);
+
     if (
-      !amount ||
-      !Number.isFinite(Number(amount)) ||
-      Number(amount) <= 0
+      !Number.isFinite(numericAmount) ||
+      numericAmount < 0.01 ||
+      numericAmount > MAX_DEMO_AMOUNT
     ) {
-      setStatus("Please enter an amount greater than zero.");
+      setStatus("Demo checkout amount must be between 0.01 and 5 XLM.");
       return;
     }
 
     try {
       setLoading(true);
-      setStatus("Creating secure checkout...");
+      setStatus("Creating Testnet checkout...");
 
       const response = await fetch(`${API_URL}/api/create-checkout`, {
         method: "POST",
@@ -322,7 +116,7 @@ function App() {
 
       const data = await response.json();
 
-      if (!response.ok || !data.checkoutUrl) {
+      if (!response.ok || !data.success || !data.checkoutUrl) {
         throw new Error(data.error || "Checkout creation failed.");
       }
 
@@ -330,12 +124,11 @@ function App() {
 
       window.location.href = data.checkoutUrl;
     } catch (error) {
-      setStatus(error.message);
+      setStatus(error.message || "Checkout failed.");
       setLoading(false);
     }
   }
 
-  // Payment success page.
   if (currentPage === "/success") {
     const isConfirmed =
       payment?.status === "confirmed" ||
@@ -356,9 +149,7 @@ function App() {
           <div className="payment-card">
             <h1>Payment Result</h1>
 
-            {!payment && (
-              <p>{status || "Loading payment details..."}</p>
-            )}
+            {!payment && <p>{status || "Loading payment details..."}</p>}
 
             {payment && (
               <>
@@ -375,10 +166,7 @@ function App() {
                 <p>Velo Status: {payment.status}</p>
 
                 {!isConfirmed && !isFailed && (
-                  <p>
-                    Velo has not confirmed this payment yet.
-                    You can check again shortly.
-                  </p>
+                  <p>Velo has not confirmed this payment yet.</p>
                 )}
               </>
             )}
@@ -405,7 +193,6 @@ function App() {
     );
   }
 
-  // Payment cancellation page.
   if (currentPage === "/cancel") {
     return (
       <div className="app">
@@ -417,10 +204,7 @@ function App() {
         <main className="dashboard">
           <div className="payment-card">
             <h1>Checkout Cancelled</h1>
-
-            <p>
-              You returned from checkout without completing the payment.
-            </p>
+            <p>You returned from checkout without completing the payment.</p>
 
             <button
               className="send-button"
@@ -434,7 +218,6 @@ function App() {
     );
   }
 
-  // Main dashboard.
   return (
     <div className="app">
       <nav className="navbar">
@@ -449,167 +232,85 @@ function App() {
           Your AI-powered payment assistant.
         </p>
 
-        {/* NOIR SETUP */}
         <div className="payment-card">
-          <h2>Noir Agent Setup</h2>
+          <h2>Noir Agent Wallet</h2>
 
           <p>
-            Connect your Owner wallet to configure your test payment agent.
+            Connect your own Noir-compatible wallet to the Stellar Testnet.
           </p>
 
           <button
             className="send-button"
             onClick={connectOwner}
-            disabled={noirLoading || Boolean(ownerSigner)}
+            disabled={noirLoading || Boolean(ownerAddress)}
           >
-            {ownerSigner ? "Owner Connected" : "Connect Noir Wallet"}
+            {noirLoading
+              ? "Connecting..."
+              : ownerAddress
+              ? "Wallet Connected"
+              : "Connect Noir Wallet"}
           </button>
 
           {ownerAddress && (
-            <p className="status">
-              Owner: {ownerAddress}
-            </p>
+            <p className="status">Owner: {ownerAddress}</p>
           )}
 
-          <button
-            className="send-button"
-            onClick={setupNoir}
-            disabled={noirLoading || !ownerSigner}
-          >
-            {noirLoading
-              ? "Please wait..."
-              : "Register Agent and Fund Escrow"}
-          </button>
+          {noirStatus && <p className="status">{noirStatus}</p>}
 
-          <p className="status">{noirStatus}</p>
+          <p className="status">
+            Public agent transactions are not enabled yet. Individual
+            wallet authorization is required before enabling them.
+          </p>
         </div>
 
-        {/* NOIR AGENT PAYMENT */}
         <div className="payment-card">
           <h2>Noir Agent Payment</h2>
 
           <p>
-            Let your authorized payment agent make a policy-checked
-            payment to the demo merchant using Stellar Testnet.
+            Agent payments use a shared demo account in the current backend.
+            They are protected from public use until individual authorization
+            is implemented.
           </p>
 
-          <label>Agent Payment Amount (XLM)</label>
-
-          <input
-            type="number"
-            min="0.0000001"
-            max="5"
-            step="0.0000001"
-            value={agentAmount}
-            onChange={(e) => setAgentAmount(e.target.value)}
-          />
-
-          <p className="status">
-            Maximum allowed per payment: 5 XLM
-          </p>
-
-          <button
-            className="send-button"
-            onClick={handleAgentPayment}
-            disabled={agentLoading || PUBLIC_PAYMENT_DISABLED}
-          >
-            {PUBLIC_PAYMENT_DISABLED
-              ? "Payments Disabled on Public Demo"
-              : agentLoading
-              ? "Agent Processing Payment..."
-              : "Start Agent Payment"}
+          <button className="send-button" disabled>
+            Agent Payments Not Available in Public Demo
           </button>
-
-          {PUBLIC_PAYMENT_DISABLED && (
-            <p className="status">
-              Run the app locally to test agent payments.
-            </p>
-          )}
-
-          {agentStatus && (
-            <p className="status">{agentStatus}</p>
-          )}
-
-          {agentResult && (
-            <div className="agent-result">
-              <h3>Agent Payment Result</h3>
-
-              <p>
-                <strong>Amount:</strong> {agentResult.amount} XLM
-              </p>
-
-              <p>
-                <strong>Network:</strong> Stellar Testnet
-              </p>
-
-              <p>
-                <strong>Agent:</strong> {agentResult.agent}
-              </p>
-
-              <p>
-                <strong>Merchant:</strong> {agentResult.merchant}
-              </p>
-
-              <p>
-                <strong>Authorization Hash:</strong>
-              </p>
-
-              <p className="status">
-                {agentResult.authorizationHash}
-              </p>
-
-              <p>
-                <strong>Merchant Claim Hash:</strong>
-              </p>
-
-              <p className="status">
-                {agentResult.claimHash || "Claim not completed"}
-              </p>
-
-              {agentResult.claimError && (
-                <p className="status">
-                  Claim message: {agentResult.claimError}
-                </p>
-              )}
-            </div>
-          )}
         </div>
 
-        {/* VELO CHECKOUT */}
         <div className="payment-card">
           <h2>Velo Checkout</h2>
+
+          <p>
+            Try a Stellar Testnet checkout. This is a test environment,
+            not a real-money payment.
+          </p>
 
           <label>Amount (XLM)</label>
 
           <input
             type="number"
-            min="0"
-            step="any"
-            placeholder="Enter amount"
+            min="0.01"
+            max="5"
+            step="0.01"
+            placeholder="Enter amount (0.01 - 5 XLM)"
             value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            onChange={(event) => setAmount(event.target.value)}
           />
+
+          <p className="status">Demo limit: 0.01 to 5 XLM.</p>
 
           <button
             className="send-button"
             onClick={handlePayment}
-            disabled={loading || PUBLIC_PAYMENT_DISABLED}
+            disabled={loading}
           >
-            {PUBLIC_PAYMENT_DISABLED
-              ? "Checkout Disabled on Public Demo"
-              : loading
-              ? "Please wait..."
-              : "Continue"}
+            {loading ? "Creating Checkout..." : "Continue to Velo Checkout"}
           </button>
 
-          {PUBLIC_PAYMENT_DISABLED && (
-            <p className="status">
-              Run the app locally to test Velo checkout.
-            </p>
-          )}
+          {status && <p className="status">{status}</p>}
 
-          <p className="status">{status}</p>
           <p className="status">Backend: {serverMessage}</p>
+          <p className="status">Network: Stellar Testnet</p>
         </div>
       </main>
     </div>

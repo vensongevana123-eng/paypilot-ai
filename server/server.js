@@ -17,7 +17,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
-// CORS configuration
+app.set("trust proxy", 1);
+
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -37,7 +38,28 @@ app.use(
   })
 );
 
-// Velo webhook - verify the signature before accepting events
+// Simple in-memory request limiter for the public demo.
+const requestLimits = new Map();
+
+function allowRequest(key, maxRequests, windowMs) {
+  const now = Date.now();
+  let entry = requestLimits.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    entry = { count: 0, resetAt: now + windowMs };
+  }
+
+  if (entry.count >= maxRequests) {
+    requestLimits.set(key, entry);
+    return false;
+  }
+
+  entry.count += 1;
+  requestLimits.set(key, entry);
+  return true;
+}
+
+// Velo webhook signature verification.
 app.post(
   "/api/webhooks/velo",
   express.raw({ type: "application/json" }),
@@ -48,6 +70,7 @@ app.post(
 
       if (!secret || !signature) {
         return res.status(400).json({
+          received: false,
           error: "Missing webhook configuration or signature.",
         });
       }
@@ -66,7 +89,6 @@ app.post(
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Velo webhook verification failed:", error.message);
-
       return res.status(400).json({
         received: false,
         error: "Invalid webhook signature.",
@@ -77,7 +99,7 @@ app.post(
 
 app.use(express.json({ limit: "10kb" }));
 
-// Noir configuration
+// Noir configuration.
 if (
   !process.env.NOIR_AGENT_SECRET ||
   !process.env.NOIR_MERCHANT_SECRET
@@ -87,13 +109,8 @@ if (
 
 const noir = new NoirAgentClient();
 
-const agentSigner = keypairSigner(
-  process.env.NOIR_AGENT_SECRET
-);
-
-const merchantSigner = keypairSigner(
-  process.env.NOIR_MERCHANT_SECRET
-);
+const agentSigner = keypairSigner(process.env.NOIR_AGENT_SECRET);
+const merchantSigner = keypairSigner(process.env.NOIR_MERCHANT_SECRET);
 
 const agentAddress = agentSigner.publicKey;
 const merchantAddress = merchantSigner.publicKey;
@@ -106,12 +123,12 @@ const deviceHash = createHash("sha256")
   .update(DEVICE_UID)
   .digest("hex");
 
-// Health check
+// Health check.
 app.get("/", (req, res) => {
   res.send("PayPilot AI Server is running!");
 });
 
-// Noir account and policy information
+// Read-only shared Noir demo status.
 app.get("/api/noir/status", async (req, res) => {
   try {
     const balance = await noir.getEscrowBalance(deviceHash);
@@ -120,6 +137,7 @@ app.get("/api/noir/status", async (req, res) => {
     return res.json({
       success: true,
       network: "Stellar Testnet",
+      demoAccount: true,
       agent: agentAddress,
       merchant: merchantAddress,
       escrowBalance: fromStroops(balance),
@@ -134,7 +152,6 @@ app.get("/api/noir/status", async (req, res) => {
     });
   } catch (error) {
     console.error("Noir status error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Unable to retrieve Noir status.",
@@ -142,13 +159,12 @@ app.get("/api/noir/status", async (req, res) => {
   }
 });
 
-// Agent-driven Noir Testnet payment
+// Shared server-side Noir payments stay disabled in production.
 app.post("/api/noir/pay", async (req, res) => {
-  // Public production payments remain disabled until authentication is added.
   if (IS_PRODUCTION) {
     return res.status(403).json({
       success: false,
-      error: "Testnet payments are disabled on the public server.",
+      error: "Shared Noir payments are disabled on the public demo.",
     });
   }
 
@@ -158,7 +174,7 @@ app.post("/api/noir/pay", async (req, res) => {
     if (!/^\d+(\.\d{1,7})?$/.test(rawAmount)) {
       return res.status(400).json({
         success: false,
-        error: "Enter a valid XLM amount with up to 7 decimal places.",
+        error: "Enter a valid XLM amount.",
       });
     }
 
@@ -171,9 +187,6 @@ app.post("/api/noir/pay", async (req, res) => {
       });
     }
 
-    console.log("Agent checking payment:", rawAmount, "XLM");
-
-    // Step 1: Check the Noir spending policy.
     const check = await noir.checkPayment({
       deviceHash,
       agent: agentAddress,
@@ -191,7 +204,6 @@ app.post("/api/noir/pay", async (req, res) => {
       });
     }
 
-    // Step 2: Agent authorizes the payment.
     const authorization = await noir.authorizePayment({
       agent: agentSigner,
       deviceHash,
@@ -200,9 +212,6 @@ app.post("/api/noir/pay", async (req, res) => {
       amount,
     });
 
-    console.log("Noir payment authorized:", authorization.hash);
-
-    // Step 3: Merchant claims the pending payment.
     let claimHash = null;
     let claimError = null;
 
@@ -211,9 +220,7 @@ app.post("/api/noir/pay", async (req, res) => {
         merchant: merchantSigner,
         token: asset,
       });
-
       claimHash = claim.hash;
-      console.log("Merchant claimed payment:", claimHash);
     } catch (error) {
       claimError = "Payment authorized, but merchant claim needs retry.";
       console.error("Merchant claim error:", error.message);
@@ -233,7 +240,6 @@ app.post("/api/noir/pay", async (req, res) => {
     });
   } catch (error) {
     console.error("Noir payment error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Noir payment could not be completed.",
@@ -241,55 +247,67 @@ app.post("/api/noir/pay", async (req, res) => {
   }
 });
 
-// Velo checkout
+// Public Velo checkout: Stellar Testnet only.
 app.post("/api/create-checkout", async (req, res) => {
-  // Do not allow public checkout creation until authentication is added.
-  if (IS_PRODUCTION) {
-    return res.status(403).json({
+  const clientKey = req.ip || "unknown";
+
+  if (!allowRequest(clientKey, 5, 10 * 60 * 1000)) {
+    return res.status(429).json({
       success: false,
-      error: "Checkout creation is disabled on the public server.",
+      error: "Too many checkout requests. Please try again later.",
     });
   }
 
   try {
-    const { amount } = req.body;
+    const rawAmount = String(req.body.amount ?? "");
 
-    if (
-      amount === undefined ||
-      amount === null ||
-      amount === "" ||
-      !Number.isFinite(Number(amount)) ||
-      Number(amount) <= 0
-    ) {
+    if (!/^\d+(\.\d{1,2})?$/.test(rawAmount)) {
       return res.status(400).json({
         success: false,
-        error: "Please provide a valid amount.",
+        error: "Enter an amount with up to 2 decimal places.",
       });
     }
 
-    const frontendUrl =
-      process.env.FRONTEND_URL || "http://localhost:5174";
+    const amount = Number(rawAmount);
+
+    if (!Number.isFinite(amount) || amount < 0.01 || amount > 5) {
+      return res.status(400).json({
+        success: false,
+        error: "Demo checkout amount must be between 0.01 and 5 XLM.",
+      });
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL;
+
+    if (IS_PRODUCTION && !frontendUrl) {
+      return res.status(500).json({
+        success: false,
+        error: "Frontend URL is not configured.",
+      });
+    }
+
+    const baseUrl = frontendUrl || "http://localhost:5174";
 
     const session = await velo.checkout.sessions.create({
-      amount: Number(amount).toFixed(2),
+      amount: amount.toFixed(2),
       asset: "native",
-      description: "PayPilot AI Testnet Payment",
-      successUrl: `${frontendUrl}/success`,
-      cancelUrl: `${frontendUrl}/cancel`,
+      description: "PayPilot AI Stellar Testnet Demo",
+      successUrl: `${baseUrl}/success`,
+      cancelUrl: `${baseUrl}/cancel`,
     });
 
-    if (!session.checkoutUrl) {
-      throw new Error("Velo did not return a checkout URL.");
+    if (!session.checkoutUrl || !session.paymentIntentId) {
+      throw new Error("Velo did not return checkout details.");
     }
 
     return res.json({
       success: true,
+      network: "Stellar Testnet",
       checkoutUrl: session.checkoutUrl,
       paymentIntentId: session.paymentIntentId,
     });
   } catch (error) {
     console.error("Checkout error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Unable to create checkout session.",
@@ -297,7 +315,7 @@ app.post("/api/create-checkout", async (req, res) => {
   }
 });
 
-// Velo payment lookup
+// Velo payment lookup.
 app.get("/api/payment/:id", async (req, res) => {
   try {
     const intent = await velo.paymentIntents.retrieve(req.params.id);
@@ -308,7 +326,6 @@ app.get("/api/payment/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("Payment lookup error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Unable to retrieve payment information.",
@@ -316,7 +333,6 @@ app.get("/api/payment/:id", async (req, res) => {
   }
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`PayPilot AI Server running on port ${PORT}`);
   console.log("Noir Agent:", agentAddress);
