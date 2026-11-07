@@ -8,7 +8,16 @@ import {
 } from "@noirx402/agent-sdk";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:3000";
+// Automatically select the correct backend.
+const IS_LOCAL =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1";
+
+const API_URL = IS_LOCAL
+  ? "http://127.0.0.1:3000"
+  : "https://paypilot-ai-aoad.onrender.com";
+
+const PUBLIC_PAYMENT_DISABLED = !IS_LOCAL;
 
 const AGENT =
   "GAA5FPAJJ5RCDFHFWVTWTXNDAIFNOGKYTLPFUSRFV6OORDLC7V5BEGDX";
@@ -49,13 +58,20 @@ function App() {
 
   const currentPage = window.location.pathname;
 
+  // Check backend connection.
   useEffect(() => {
     fetch(API_URL)
-      .then((response) => response.text())
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Backend unavailable");
+        }
+        return response.text();
+      })
       .then(setServerMessage)
       .catch(() => setServerMessage("Backend offline"));
   }, []);
 
+  // Connect the Noir owner wallet.
   async function connectOwner() {
     try {
       setNoirLoading(true);
@@ -75,6 +91,7 @@ function App() {
     }
   }
 
+  // Register the device, authorize the agent, and fund escrow.
   async function setupNoir() {
     if (!ownerSigner) {
       setNoirStatus("Connect your Owner wallet first.");
@@ -148,7 +165,7 @@ function App() {
       }
 
       setNoirStatus(
-        "Success! Device registered, Agent authorized, and escrow funded with 10 XLM."
+        "Success! Device registered, Agent authorized, and escrow funded."
       );
     } catch (error) {
       console.error("Noir setup error:", error);
@@ -161,10 +178,17 @@ function App() {
     }
   }
 
-  // Agent checks policy, authorizes payment, and merchant claims it.
+  // Agent-driven payment.
   async function handleAgentPayment() {
     setAgentResult(null);
     setAgentStatus("");
+
+    if (PUBLIC_PAYMENT_DISABLED) {
+      setAgentStatus(
+        "Agent payments are disabled on the public website. Run the local demo to test payments."
+      );
+      return;
+    }
 
     if (
       !/^\d+(\.\d{1,7})?$/.test(agentAmount) ||
@@ -200,8 +224,8 @@ function App() {
       if (!response.ok || !data.success) {
         throw new Error(
           data.message ||
-          data.error ||
-          `Payment refused: ${data.reason || "Unknown reason"}`
+            data.error ||
+            `Payment refused: ${data.reason || "Unknown reason"}`
         );
       }
 
@@ -224,6 +248,7 @@ function App() {
     }
   }
 
+  // Check Velo payment status.
   async function checkPayment() {
     const paymentIntentId = localStorage.getItem("paymentIntentId");
 
@@ -237,7 +262,7 @@ function App() {
       setStatus("Checking payment with Velo...");
 
       const response = await fetch(
-        `${API_URL}/api/payment/${paymentIntentId}`
+        `${API_URL}/api/payment/${encodeURIComponent(paymentIntentId)}`
       );
 
       const data = await response.json();
@@ -255,15 +280,24 @@ function App() {
     }
   }
 
+  // Load payment details after returning from checkout.
   useEffect(() => {
     if (currentPage === "/success") {
       checkPayment();
     }
   }, []);
 
+  // Create a Velo checkout session.
   async function handlePayment() {
     setStatus("");
     setPayment(null);
+
+    if (PUBLIC_PAYMENT_DISABLED) {
+      setStatus(
+        "Velo checkout is disabled on the public website. Run the local demo to test checkout."
+      );
+      return;
+    }
 
     if (
       !amount ||
@@ -301,6 +335,7 @@ function App() {
     }
   }
 
+  // Payment success page.
   if (currentPage === "/success") {
     const isConfirmed =
       payment?.status === "confirmed" ||
@@ -321,7 +356,9 @@ function App() {
           <div className="payment-card">
             <h1>Payment Result</h1>
 
-            {!payment && <p>{status || "Loading payment details..."}</p>}
+            {!payment && (
+              <p>{status || "Loading payment details..."}</p>
+            )}
 
             {payment && (
               <>
@@ -368,6 +405,7 @@ function App() {
     );
   }
 
+  // Payment cancellation page.
   if (currentPage === "/cancel") {
     return (
       <div className="app">
@@ -379,7 +417,10 @@ function App() {
         <main className="dashboard">
           <div className="payment-card">
             <h1>Checkout Cancelled</h1>
-            <p>You returned from checkout without completing the payment.</p>
+
+            <p>
+              You returned from checkout without completing the payment.
+            </p>
 
             <button
               className="send-button"
@@ -393,6 +434,7 @@ function App() {
     );
   }
 
+  // Main dashboard.
   return (
     <div className="app">
       <nav className="navbar">
@@ -442,7 +484,7 @@ function App() {
           <p className="status">{noirStatus}</p>
         </div>
 
-        {/* NEW NOIR AGENT PAYMENT */}
+        {/* NOIR AGENT PAYMENT */}
         <div className="payment-card">
           <h2>Noir Agent Payment</h2>
 
@@ -469,12 +511,20 @@ function App() {
           <button
             className="send-button"
             onClick={handleAgentPayment}
-            disabled={agentLoading}
+            disabled={agentLoading || PUBLIC_PAYMENT_DISABLED}
           >
-            {agentLoading
+            {PUBLIC_PAYMENT_DISABLED
+              ? "Payments Disabled on Public Demo"
+              : agentLoading
               ? "Agent Processing Payment..."
               : "Start Agent Payment"}
           </button>
+
+          {PUBLIC_PAYMENT_DISABLED && (
+            <p className="status">
+              Run the app locally to test agent payments.
+            </p>
+          )}
 
           {agentStatus && (
             <p className="status">{agentStatus}</p>
@@ -543,10 +593,20 @@ function App() {
           <button
             className="send-button"
             onClick={handlePayment}
-            disabled={loading}
+            disabled={loading || PUBLIC_PAYMENT_DISABLED}
           >
-            {loading ? "Please wait..." : "Continue"}
+            {PUBLIC_PAYMENT_DISABLED
+              ? "Checkout Disabled on Public Demo"
+              : loading
+              ? "Please wait..."
+              : "Continue"}
           </button>
+
+          {PUBLIC_PAYMENT_DISABLED && (
+            <p className="status">
+              Run the app locally to test Velo checkout.
+            </p>
+          )}
 
           <p className="status">{status}</p>
           <p className="status">Backend: {serverMessage}</p>
